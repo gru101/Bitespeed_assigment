@@ -28,7 +28,7 @@ SECRET_KEY = os.getenv("SECRET_KEY")
 # SECURITY WARNING: don't run with debug turned on in production!
 DEBUG = False
 
-ALLOWED_HOSTS = ["https://bitespeed-assigment-79qu.onrender.com"]
+ALLOWED_HOSTS = ['bitespeed-assigment-79qu.onrender.com', '127.0.0.1', 'localhost']
 
 
 # Application definition
