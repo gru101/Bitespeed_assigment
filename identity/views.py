@@ -1,121 +1,102 @@
 from django.views import View 
-from .models import Contacts
 from django.utils.decorators import method_decorator
 from django.views.decorators.csrf import csrf_exempt
-import json
-from django.db.models import Q
-# Create your views here.
 from django.http import JsonResponse
+from django.db.models import Q
+from .models import Contacts
+import json
 
 @method_decorator(csrf_exempt, name="dispatch")
 class Identify(View):
-    @classmethod
-    def get_oldest(cls, email_query, phonenumber_query):
-        email_created = email_query[0].createdAt
-        phone_created = phonenumber_query[0].createdAt
-        if email_created < phone_created:
-            return {"oldest": "email"}
-        else:
-            return {"oldest": "phonenumber"}
-
     def post(self, request, *args, **kwargs):
-        try: 
+        try:
             data = json.loads(request.body)
         except:
-            return JsonResponse(data={"message":"invalid json"}, status=400)
-
+            return JsonResponse({"message": "invalid json"}, status=400)
+        
         email = data.get("email")
-        phonenumber = data.get("phoneNumber")
-        email_query = Contacts.objects.filter(email=email).order_by("createdAt")
-        phonenumber_query = Contacts.objects.filter(phoneNumber=phonenumber).order_by("createdAt")
+        phone = data.get("phoneNumber")
 
-        # Both email & phone given
-        if email and phonenumber:
-            if email_query.exists() and phonenumber_query.exists():
-                oldest = self.get_oldest(email_query, phonenumber_query)
-                if oldest["oldest"] == "email":
-                    newer = phonenumber_query[0]
-                    primary = email_query[0]
-                else:
-                    newer = email_query[0]
-                    primary = phonenumber_query[0]
-                # merge: make newer secondary
-                newer.linkedId = primary.id
-                newer.linkPrecedence = "secondary"
-                newer.save()
-                contacts = Contacts.objects.filter(Q(id=primary.id) | Q(linkedId=primary.id))
-                return JsonResponse({"contact": {
-                    "primaryContactId": primary.id,
-                    "emails": [c.email for c in contacts],
-                    "phoneNumbers": [c.phoneNumber for c in contacts],
-                    "secondaryContactIds": [c.id for c in contacts if c.id != primary.id]
-                }})
-            elif email_query.exists():
-                # phone is new
-                new = Contacts.objects.create(phoneNumber=phonenumber, linkedId=email_query[0].id, linkPrecedence="secondary")
-                contacts = Contacts.objects.filter(Q(id=email_query[0].id) | Q(linkedId=email_query[0].id))
-                return JsonResponse({"contact": {
-                    "primaryContactId": email_query[0].id,
-                    "emails": [c.email for c in contacts],
-                    "phoneNumbers": [c.phoneNumber for c in contacts],
-                    "secondaryContactIds": [c.id for c in contacts if c.id != email_query[0].id]
-                }})
-            elif phonenumber_query.exists():
-                # email is new
-                new = Contacts.objects.create(email=email, linkedId=phonenumber_query[0].id, linkPrecedence="secondary")
-                contacts = Contacts.objects.filter(Q(id=phonenumber_query[0].id) | Q(linkedId=phonenumber_query[0].id))
-                return JsonResponse({"contact": {
-                    "primaryContactId": phonenumber_query[0].id,
-                    "emails": [c.email for c in contacts],
-                    "phoneNumbers": [c.phoneNumber for c in contacts],
-                    "secondaryContactIds": [c.id for c in contacts if c.id != phonenumber_query[0].id]
-                }})
-            else:
-                # both are new
-                new = Contacts.objects.create(email=email, phoneNumber=phonenumber, linkPrecedence="primary")
-                return JsonResponse({"contact": {
-                    "primaryContactId": new.id,
-                    "emails": [new.email],
-                    "phoneNumbers": [new.phoneNumber],
-                    "secondaryContactIds": []
-                }})
+        if not email and not phone:
+            return JsonResponse({"message": "email or phoneNumber required"}, status=400)
 
-        # only email
-        elif email:
-            if email_query.exists():
-                contacts = Contacts.objects.filter(Q(id=email_query[0].id) | Q(linkedId=email_query[0].id))
-                return JsonResponse({"contact": {
-                    "primaryContactId": email_query[0].id,
-                    "emails": [c.email for c in contacts],
-                    "phoneNumbers": [c.phoneNumber for c in contacts],
-                    "secondaryContactIds": [c.id for c in contacts if c.id != email_query[0].id]
-                }})
-            else:
-                new = Contacts.objects.create(email=email, linkPrecedence="primary")
-                return JsonResponse({"contact": {
-                    "primaryContactId": new.id,
-                    "emails": [new.email],
-                    "phoneNumbers": [],
-                    "secondaryContactIds": []
-                }})
+        # Get matching contacts
+        email_qs = Contacts.objects.filter(email=email)
+        phone_qs = Contacts.objects.filter(phoneNumber=phone)
 
-        # only phone
-        elif phonenumber:
-            if phonenumber_query.exists():
-                contacts = Contacts.objects.filter(Q(id=phonenumber_query[0].id) | Q(linkedId=phonenumber_query[0].id))
-                return JsonResponse({"contact": {
-                    "primaryContactId": phonenumber_query[0].id,
-                    "emails": [c.email for c in contacts],
-                    "phoneNumbers": [c.phoneNumber for c in contacts],
-                    "secondaryContactIds": [c.id for c in contacts if c.id != phonenumber_query[0].id]
-                }})
-            else:
-                new = Contacts.objects.create(phoneNumber=phonenumber, linkPrecedence="primary")
-                return JsonResponse({"contact": {
-                    "primaryContactId": new.id,
-                    "emails": [],
-                    "phoneNumbers": [new.phoneNumber],
-                    "secondaryContactIds": []
-                }})
+        # Collect all related contacts (using linkedId or self id)
+        related_contacts = set()
 
-        return JsonResponse({"message":"Invalid JSON"}, status=400)
+        for qs in [email_qs, phone_qs]:
+            if qs.exists():
+                primary_id = qs[0].linkedId if qs[0].linkedId else qs[0].id
+                group = Contacts.objects.filter(Q(id=primary_id) | Q(linkedId=primary_id))
+                related_contacts.update(group)
+
+        related_contacts = list(related_contacts)
+
+        # CASE 1: Neither email nor phone exists
+        if not email_qs.exists() and not phone_qs.exists():
+            new = Contacts.objects.create(email=email, phoneNumber=phone, linkPrecedence="PM")
+            return JsonResponse({"contact": {
+                "primaryContatctId": new.id,
+                "emails": [new.email] if new.email else [],
+                "phoneNumbers": [new.phoneNumber] if new.phoneNumber else [],
+                "secondaryContactIds": []
+            }})
+
+        # CASE 2: Only email exists
+        if email_qs.exists() and not phone_qs.exists() and phone:
+            # Add phone as secondary
+            primary = email_qs[0].linkedId or email_qs[0].id
+            Contacts.objects.create(email=None, phoneNumber=phone, linkedId=primary, linkPrecedence="SC")
+            related_contacts = Contacts.objects.filter(Q(id=primary) | Q(linkedId=primary))
+
+        # CASE 3: Only phone exists
+        if phone_qs.exists() and not email_qs.exists() and email:
+            primary = phone_qs[0].linkedId or phone_qs[0].id
+            Contacts.objects.create(email=email, phoneNumber=None, linkedId=primary, linkPrecedence="SC")
+            related_contacts = Contacts.objects.filter(Q(id=primary) | Q(linkedId=primary))
+
+        # CASE 4: Both exist but in different groups → merge
+        if email_qs.exists() and phone_qs.exists():
+            email_primary = email_qs[0].linkedId or email_qs[0].id
+            phone_primary = phone_qs[0].linkedId or phone_qs[0].id
+
+            if email_primary != phone_primary:
+                # choose oldest as primary
+                email_primary_obj = Contacts.objects.get(id=email_primary)
+                phone_primary_obj = Contacts.objects.get(id=phone_primary)
+                oldest = email_primary_obj if email_primary_obj.createdAt <= phone_primary_obj.createdAt else phone_primary_obj
+                to_secondary = phone_primary_obj if oldest.id == email_primary_obj.id else email_primary_obj
+
+                # update
+                to_secondary.linkPrecedence = "SC"
+                to_secondary.linkedId = oldest.id
+                to_secondary.save()
+
+                # update all contacts in secondary group
+                Contacts.objects.filter(linkedId=to_secondary.id).update(linkedId=oldest.id)
+
+                related_contacts = Contacts.objects.filter(Q(id=oldest.id) | Q(linkedId=oldest.id))
+
+        # CASE 5: already in same group → do nothing
+        if not related_contacts:
+            # fallback: get from email or phone
+            primary = email_qs[0].linkedId or email_qs[0].id if email_qs.exists() else phone_qs[0].linkedId or phone_qs[0].id
+            related_contacts = Contacts.objects.filter(Q(id=primary) | Q(linkedId=primary))
+
+        # Build response
+        primaries = [c for c in related_contacts if c.linkPrecedence == "PM" or c.id == (c.linkedId or c.id)]
+        primary = sorted(primaries, key=lambda c: c.createdAt)[0]  # oldest PM as true primary
+
+        emails = sorted({c.email for c in related_contacts if c.email})
+        phones = sorted({c.phoneNumber for c in related_contacts if c.phoneNumber})
+        secondaries = [c.id for c in related_contacts if c.id != primary.id]
+
+        return JsonResponse({"contact": {
+            "primaryContatctId": primary.id,
+            "emails": emails,
+            "phoneNumbers": phones,
+            "secondaryContactIds": secondaries
+        }})
